@@ -205,7 +205,7 @@ function freshDay(prev){
            running:null, landing:"", tag:null, minMode:false, did:"", good:"" };
 }
 var S = { day:freshDay(null), tracks:[], carry:"", hist:{}, tasks:[], events:[], memos:[], theme:null, core:null };
-var wkOff = 0, csvText = null, selDate = null, editCore = false, mOff = 0, answer = null, showRv = false, showSync = false;
+var wkOff = 0, csvText = null, selDate = null, editCore = false, mOff = 0, answer = null, showRv = false, showSync = false, showShare = false;
 var taskView = "bucket", evImp = false, memoImp = false;
 var tab = "today", PRICOL = {1:"--red",2:"--amber",3:"--steel"};
 
@@ -258,8 +258,8 @@ function commit(r){ save(); if(r!==false) render(); }
 /* 앱 코드는 공개 저장소(Pages)에, 기록 데이터는 비공개 저장소에 JSON으로 둔다.
    토큰은 기기마다 따로 이 기기에만 저장된다. 저장 형식(S)은 건드리지 않는다. */
 var GH_KEY = "nunkeum:gh";
-var gh = { token:"", owner:"", repo:"", path:"nunkeum.json", branch:"" };
-var syncState = "off", syncMsg = "", syncAt = 0;
+var gh = { token:"", owner:"", repo:"", path:"nunkeum.json", branch:"", pubOn:false, pubOwner:"", pubRepo:"", pubPath:"events.json" };
+var syncState = "off", syncMsg = "", syncAt = 0, pubState = "off", pubMsg = "";
 var lastSha = null, booted = false, pulling = false, pushing = false, pendingPush = false, pushTimer = null;
 
 function ghLoad(){ try{ var r=localStorage.getItem(GH_KEY); if(r) gh=Object.assign(gh, JSON.parse(r)||{}); }catch(e){} }
@@ -305,7 +305,35 @@ function ghPut(doc, sha, cb){
   }).catch(function(){ cb({code:0, msg:"network"}); });
 }
 
-/* ---- 병합: 기록은 절대 줄지 않게. hist는 언제나 합친다 ---- */
+/* ---- 남친용 공개 일정: '일정'만 골라 공개 저장소에 올린다. 그 외 데이터는 절대 포함하지 않는다 ---- */
+function eventsOnlyDoc(){
+  return { kind:"nunkeum-schedule", updatedAt:Date.now(),
+    events:(S.events||[]).map(function(e){
+      return { id:e.id, title:e.title, date:e.date, start:e.start||"", end:e.end||"", star:!!e.star };
+    }) };
+}
+function ghPutTo(owner, repo, path, obj, cb){
+  var base="https://api.github.com/repos/"+owner+"/"+repo+"/contents/"+String(path).split("/").map(encodeURIComponent).join("/");
+  var doPut=function(sha){
+    var body={ message:"눈금 일정 "+today(), content:b64enc(JSON.stringify(obj)) };
+    if(sha) body.sha=sha;
+    fetch(base, { method:"PUT", headers:ghHead(), body:JSON.stringify(body) })
+      .then(function(pr){ cb(pr.ok?null:{code:pr.status}); })
+      .catch(function(){ cb({code:0}); });
+  };
+  fetch(base, { headers:ghHead(), cache:"no-store" }).then(function(r){
+    if(r.status===404) return doPut(null);
+    if(!r.ok) return cb({code:r.status});
+    return r.json().then(function(j){ doPut(j.sha); });
+  }).catch(function(){ cb({code:0}); });
+}
+function publishEvents(cb){
+  if(!(gh.pubOn && gh.pubOwner && gh.pubRepo && gh.token)){ if(cb) cb(); return; }
+  ghPutTo(gh.pubOwner, gh.pubRepo, gh.pubPath||"events.json", eventsOnlyDoc(), function(err){
+    pubState = err ? "error" : "ok"; pubMsg = err ? errText(err) : "";
+    paintSync(); if(cb) cb(err);
+  });
+}
 function totMin(rec){ var l=(rec&&rec.l)||{}, s=0; for(var k in l) s+=(+l[k]||0); return s; }
 function richer(a,b){
   if(!a) return b; if(!b) return a;
@@ -431,12 +459,12 @@ function syncPush(){
     var before=snap(S); adopt(merged);
     if(snap(S)!==before) render();
     if(remote && snap(merged)===snap(remote)){ /* 내용 동일 — 쓸 필요 없음 */
-      pushing=false; lastSha=sha; setSync("ok"); if(pendingPush) syncSchedulePush(); return; }
+      pushing=false; lastSha=sha; setSync("ok"); publishEvents(); if(pendingPush) syncSchedulePush(); return; }
     ghPut(merged, sha, function(perr, newSha){
       pushing=false;
       if(perr && perr.code===409){ setSync("syncing"); syncSchedulePush(); return; }
       if(perr){ setSync("error", errText(perr)); return; }
-      lastSha=newSha; setSync("ok");
+      lastSha=newSha; setSync("ok"); publishEvents();
       if(pendingPush) syncSchedulePush();
     });
   });
@@ -756,9 +784,26 @@ var A = {
     syncPull(false, function(){ if((S.updatedAt||0) > 0) syncPush(); }); },
   syncOff: function(){
     if(!confirm("이 기기에서 연동을 끌까? 기록은 그대로 남고, 저장한 토큰만 지워져.")) return;
-    gh={ token:"", owner:"", repo:"", path:"nunkeum.json", branch:"" };
+    gh={ token:"", owner:"", repo:"", path:"nunkeum.json", branch:"", pubOn:false, pubOwner:"", pubRepo:"", pubPath:"events.json" };
     try{ localStorage.removeItem(GH_KEY); }catch(e){}
     booted=false; lastSha=null; setSync("off"); render();
+  },
+  shareOpen: function(){ showShare=true; render(); },
+  shareCancel: function(){ showShare=false; render(); },
+  shareConnect: function(){
+    var rv=((document.getElementById("pubRepo")||{}).value||"").trim()
+      .replace(/^https?:\/\/github\.com\//i,"").replace(/\.git$/i,"").replace(/^\/+|\/+$/g,"");
+    var pv=((document.getElementById("pubPath")||{}).value||"").trim();
+    var parts=rv.split("/").filter(Boolean);
+    if(parts.length<2){ alert("공개 저장소를 아이디/저장소 형태로 적어줘. 예: gildong/nunkeum"); return; }
+    gh.pubOwner=parts[0]; gh.pubRepo=parts[1]; gh.pubPath=pv||"events.json"; gh.pubOn=true;
+    ghSaveCfg(); showShare=false; setSync("syncing"); render();
+    publishEvents(function(err){ if(!err) alert("일정을 공개 파일로 올렸어. 남친에게 줄 주소는 설정에 나와 있어."); render(); });
+  },
+  shareNow: function(){ if(!(gh.pubOn)) return; setSync("syncing"); publishEvents(function(){ render(); }); },
+  shareOff: function(){
+    if(!confirm("일정 공개를 끌까? 이미 올라간 공개 파일은 남아 있어 — 완전히 없애려면 깃허브에서 그 파일을 지워줘.")) return;
+    gh.pubOn=false; ghSaveCfg(); pubState="off"; render();
   },
   setCore: function(k,f,val){
     S.core.forEach(function(t){
@@ -1387,6 +1432,34 @@ function render(){
     h.push('<div class="row"><button class="sm gh" data-a="syncNow">지금 맞추기</button>'+
       '<button class="sm gh" data-a="syncOpen">설정 고치기</button>'+
       '<button class="sm gh" data-a="syncOff">연동 끄기</button></div>');
+  }
+  h.push('</div>');
+
+  /* 남친에게 일정 공개 (공개 파일) */
+  var pubReady = gh.pubOn && gh.pubOwner && gh.pubRepo;
+  h.push('<div id="s-share" class="anc" style="padding-top:8px;border:none;margin-bottom:9px">일정만 공유 (보기용)</div><div class="c">'+
+    '<div class="h"><s></s><b>일정만 공개해서 누군가에게 보여주기</b></div>'+
+    '<div class="hint" style="font-size:12.5px;margin-bottom:10px">일정(약속·마감·별표)만 공개 파일로 올려. <b>논문 시간·일기·메모·할일은 절대 안 올라가.</b> 받는 사람은 주소만 열면 실시간으로 일정만 봐.</div>');
+  if(!ghOn()){
+    h.push('<div class="hint" style="font-size:12.5px">먼저 위에서 기기 연동을 켜야 이 기능을 쓸 수 있어.</div>');
+  } else if(!showShare && !pubReady){
+    h.push('<div class="row"><button class="sm k" data-a="shareOpen">일정 공개 켜기</button></div>');
+  } else if(showShare){
+    h.push('<div class="setup" style="margin-bottom:10px">일정을 올릴 <b>공개</b> 저장소를 적어줘. 보통 앱을 올린 그 공개 저장소면 돼(예: gildong/nunkeum). 토큰은 위 연동에서 쓰는 걸 그대로 쓰되, 이 공개 저장소에도 쓸 수 있게 권한을 줘야 해(안내 문서 참고).</div>'+
+      '<label class="fl">공개 저장소 <span style="color:var(--mu)">(예: gildong/nunkeum)</span></label>'+
+      '<input id="pubRepo" placeholder="아이디/공개저장소" value="'+esc(gh.pubOwner&&gh.pubRepo?gh.pubOwner+"/"+gh.pubRepo:"")+'" autocapitalize="off" autocorrect="off" spellcheck="false">'+
+      '<label class="fl" style="margin-top:9px">파일 이름 <span style="color:var(--mu)">(그대로 둬도 돼)</span></label>'+
+      '<input id="pubPath" placeholder="events.json" value="'+esc(gh.pubPath||"events.json")+'" autocapitalize="off" autocorrect="off" spellcheck="false">'+
+      '<div class="row" style="margin-top:11px"><button class="sm k" data-a="shareConnect">켜고 올리기</button>'+
+      '<button class="sm gh" data-a="shareCancel">취소</button></div>');
+  } else {
+    var vurl = "https://"+esc(gh.pubOwner)+".github.io/"+esc(gh.pubRepo)+"/일정보기.html";
+    h.push('<div class="hint" style="font-size:12.5px;margin-bottom:8px">'+
+      (pubState==="error"?'⚠ '+esc(pubMsg||"올리기 문제"):'✓ 켜짐 · 저장할 때마다 일정이 올라가')+'</div>'+
+      '<div class="hint" style="font-size:12px;margin-bottom:8px">남친에게 줄 주소:<br><b style="color:var(--tx);word-break:break-all">'+vurl+'</b><br>(공개 저장소에 <b>일정보기.html</b>을 올려둬야 이 주소가 열려 — 안내 문서 참고)</div>'+
+      '<div class="row"><button class="sm gh" data-a="shareNow">지금 올리기</button>'+
+      '<button class="sm gh" data-a="shareOpen">저장소 바꾸기</button>'+
+      '<button class="sm gh" data-a="shareOff">공개 끄기</button></div>');
   }
   h.push('</div>');
 
