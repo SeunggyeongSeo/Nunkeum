@@ -213,7 +213,7 @@ function freshDay(prev){
   return { date:today(), dayEnd:(prev&&prev.dayEnd)||"18:00", logged:{}, sessions:[],
            running:null, stopAt:0, setAt:{}, delSess:{}, landing:"", tag:null, minMode:false, did:"", good:"" };
 }
-var S = { day:freshDay(null), tracks:[], carry:"", hist:{}, tasks:[], events:[], memos:[], theme:null, core:null, fs:null };
+var S = { day:freshDay(null), tracks:[], carry:"", hist:{}, tasks:[], events:[], memos:[], theme:null, core:null, fs:null, delKeys:{} };
 var wkOff = 0, csvText = null, selDate = null, editCore = false, mOff = 0, answer = null, showRv = false, showSync = false, showShare = false, timeEd = null;
 var taskView = "bucket", evImp = false, memoImp = false;
 var tab = "today", PRICOL = {1:"--red",2:"--amber",3:"--steel"};
@@ -224,7 +224,7 @@ function load(){
     var raw = localStorage.getItem(KEY);
     if(raw){ had = true; var v = JSON.parse(raw);
       S.day = v.day || S.day; S.tracks = v.tracks||[]; S.carry = v.carry||"";
-      S.hist = v.hist||{}; S.tasks = v.tasks||[]; S.events = v.events||[]; S.memos = v.memos||[]; S.theme = v.theme||null; S.core = v.core||null; S.fs = v.fs||null; }
+      S.hist = v.hist||{}; S.tasks = v.tasks||[]; S.events = v.events||[]; S.memos = v.memos||[]; S.theme = v.theme||null; S.core = v.core||null; S.fs = v.fs||null; S.delKeys = v.delKeys||{}; }
   }catch(e){}
   if(S.day && S.day.fixed && S.day.fixed.length){
     S.day.fixed.forEach(function(f){ S.events.push({ id:f.id, title:f.label||"고정", date:S.day.date, start:f.start, end:f.end }); });
@@ -244,6 +244,7 @@ function load(){
   if(S.day && S.day.sessions) S.day.sessions.forEach(function(s,i){
     if(!s.id) s.id = "s"+(s.at||"")+"-"+(s.k||"")+"-"+i+"-"+Math.random().toString(36).slice(2,6);
   });
+  purgeKeys(S, S.delKeys);
   mergeDupTracks();
   S.events = S.events.filter(function(e){ return e.date >= today(); });
   if(!S.theme){
@@ -445,6 +446,12 @@ function mergeStates(a, b, byWeight){
   });
   var ks=Object.keys(m.hist).sort();
   if(ks.length>140) ks.slice(0,ks.length-140).forEach(function(k){ delete m.hist[k]; });
+  /* 완전히 지운 항목은 어느 쪽에서 되살려도 다시 지운다 */
+  m.delKeys = Object.assign({}, a.delKeys||{}, b.delKeys||{});
+  Object.keys(a.delKeys||{}).forEach(function(k){
+    m.delKeys[k]=Math.max(m.delKeys[k]||0, (a.delKeys||{})[k]||0);
+  });
+  purgeKeys(m, m.delKeys);
   m.updatedAt = Math.max(a.updatedAt||0, b.updatedAt||0);
   return m;
 }
@@ -453,6 +460,7 @@ function adopt(m){
   S.day=m.day||S.day; S.tracks=m.tracks||[]; S.carry=m.carry||"";
   S.hist=m.hist||{}; S.tasks=m.tasks||[]; S.events=m.events||[]; S.memos=m.memos||[];
   if(m.core&&m.core.length) S.core=m.core;
+  S.delKeys=m.delKeys||S.delKeys||{};
   S.updatedAt=m.updatedAt||S.updatedAt;
   if(m.theme && m.theme!==S.theme){ S.theme=m.theme; document.documentElement.setAttribute("data-t",S.theme); }
   mergeDupTracks();
@@ -544,6 +552,18 @@ function syncConnect(){          /* 설정 저장 직후: 첫 연결은 데이�
 }
 
 function allTracks(){ return S.core.concat(S.tracks); }
+/* 완전히 지운 항목의 흔적을 모든 기록에서 없앤다 (오늘·지난 날·앉은 줄·항목 목록) */
+function purgeKeys(st, keys){
+  var ks=Object.keys(keys||{}); if(!ks.length || !st) return;
+  var kill=function(l){ if(l) ks.forEach(function(k){ delete l[k]; }); };
+  if(st.day){
+    kill(st.day.logged); kill(st.day.setAt);
+    st.day.sessions=(st.day.sessions||[]).filter(function(x){ return ks.indexOf(x.k)<0; });
+    if(st.day.running && ks.indexOf(st.day.running.k)>=0) st.day.running=null;
+  }
+  Object.keys(st.hist||{}).forEach(function(ds){ kill(st.hist[ds] && st.hist[ds].l); });
+  st.tracks=(st.tracks||[]).filter(function(t){ return ks.indexOf(t.k)<0; });
+}
 /* 같은 제목으로 만든 항목 합치기 — 시간은 전부 더해서 보존하고, 항목만 하나로 줄인다.
    두 눈금(thesis/exam)은 건드리지 않는다. */
 function mergeDupTracks(){
@@ -981,22 +1001,37 @@ var A = {
     var core=S.core.filter(function(t){ return (t.name||"").trim()===n; })[0];
     if(core){ alert("\u201c"+n+"\u201d\uc740 \uc774\ubbf8 \uc624\ub298\uc758 \ub450 \uac00\uc9c0 \uc911 \ud558\ub098\uc57c. \uc704\uc5d0\uc11c \uc7ac\uc8fc\uba74 \ub3fc."); el.value=""; return; }
     var same=S.tracks.filter(function(t){ return (t.name||"").trim()===n; })[0];
-    if(same){ same.hidden=false; el.value=""; alert("\u201c"+n+"\u201d\uc740 \uc774\ubbf8 \uc788\uc5b4\uc11c \uadf8\uac83\uc5d0 \ud569\uc0b0\ud560\uac8c."); commit(); return; }
+    if(same && !same.hidden){ el.value=""; alert("\u201c"+n+"\u201d\uc740 \uc774\ubbf8 \ubaa9\ub85d\uc5d0 \uc788\uc5b4. \uadf8\uac83\uc5d0 \uc774\uc5b4\uc11c \uc4f8\uac8c."); commit(); return; }
+    if(same && same.hidden){
+      var acc=0; Object.keys(S.hist||{}).forEach(function(ds){ acc += +((S.hist[ds]&&S.hist[ds].l||{})[same.k]||0); });
+      if(acc>0 && !confirm("예전에 쓰던 “"+n+"” 기록 "+dur(acc)+"이 남아 있어.\n이어서 쓸까? (취소하면 0에서 새로 시작)")){
+        S.delKeys=S.delKeys||{}; S.delKeys[same.k]=Date.now();
+        var one={}; one[same.k]=1; purgeKeys(S, one);
+      } else { same.hidden=false; el.value=""; commit(); return; }
+    }
     var live=S.tracks.filter(function(t){return !t.hidden;}).length;
     S.tracks.push({ k:"u"+Date.now(), name:n, v:SUB[live%SUB.length] }); commit();
   },
+  unhideTrack: function(k){
+    S.tracks.forEach(function(x){ if(x.k===k) x.hidden=false; });
+    if(S.delKeys) delete S.delKeys[k];
+    commit();
+  },
   hideTrack: function(k){
-    var t=trackOf(k), mins=Math.round(total(k));
-    if(!confirm(t.name+"을 목록에서 뺄까?"+(mins>0?" 오늘 기록("+dur(mins)+")도 같이 지워져.":"")+"\n지난 날들 기록은 그대로 남아."))
-      return;
+    var t=trackOf(k), tot=0;
+    Object.keys(S.hist||{}).forEach(function(ds){ tot += +((S.hist[ds]&&S.hist[ds].l||{})[k]||0); });
+    var days=Object.keys(S.hist||{}).filter(function(ds){ return +((S.hist[ds].l||{})[k]||0)>0; }).length;
+    tot += Math.round(total(k));
+    if(!confirm("“"+nameOf(t)+"”을 지울까?\n"+
+        (tot>0 ? "쌓인 기록 "+dur(tot)+(days?" (지난 "+days+"일치 포함)":"")+"이 같이 지워지고, 돌아보기에서도 사라져.\n되돌릴 수 없어 — 남겨두고 싶으면 설정에서 백업을 먼저 저장해줘."
+               : "기록은 아직 없어."))) return;
     if(S.day.running && S.day.running.k===k){ S.day.running=null; S.day.stopAt=Date.now(); }
-    if(mins>0){
-      setItemTotal(k, 0);
-      (S.day.sessions||[]).forEach(function(x){ if(x.k===k) tombSess(x.id); });
-      S.day.sessions=(S.day.sessions||[]).filter(function(x){ return x.k!==k; });
-    }
+    (S.day.sessions||[]).forEach(function(x){ if(x.k===k) tombSess(x.id); });
+    if(!S.delKeys) S.delKeys={};
+    S.delKeys[k]=Date.now();
+    var one={}; one[k]=1; purgeKeys(S, one);
     if(timeEd===k) timeEd=null;
-    S.tracks.forEach(function(x){ if(x.k===k) x.hidden=true; }); commit();
+    commit();
   },
   pick: function(ds){ selDate = (selDate===ds ? null : ds);
     var f=document.getElementById("ed"); if(f && selDate) f.value = selDate; render(); },
@@ -1653,6 +1688,23 @@ function render(){
   }
   h.push('</div>');
 
+  /* 예전에 목록에서 뺐지만 기록이 남아 있는 항목 정리 */
+  var ghosts=S.tracks.filter(function(t){ return t.hidden; }).map(function(t){
+    var tot=0; Object.keys(S.hist||{}).forEach(function(ds){ tot += +((S.hist[ds]&&S.hist[ds].l||{})[t.k]||0); });
+    return { t:t, tot:Math.round(tot+total(t.k)) };
+  });
+  if(ghosts.length){
+    h.push('<div class="anc" style="padding-top:8px;border:none;margin-bottom:9px">예전에 뺀 항목</div><div class="c">'+
+      '<div class="hint" style="font-size:calc(var(--u)*0.7813);margin-bottom:10px">목록에서만 빠지고 기록은 남아 있는 것들이야. 그래서 돌아보기에는 아직 보여. 완전히 지우거나 다시 꺼내 쓸 수 있어.</div>');
+    ghosts.forEach(function(g){
+      h.push('<div class="it" style="padding:8px 0"><span class="t">'+esc(nameOf(g.t))+'</span>'+
+        '<span class="n" style="font-size:calc(var(--u)*0.8125);color:var(--mu)">'+(g.tot>0?dur(g.tot):"기록 없음")+'</span>'+
+        '<button class="sm gh" data-a="unhideTrack" data-k="'+g.t.k+'">다시 쓰기</button>'+
+        '<button class="sm gh" data-a="hideTrack" data-k="'+g.t.k+'" style="color:var(--red)">완전히 지우기</button></div>');
+    });
+    h.push('</div>');
+  }
+
   h.push('<div class="anc">기록 내보내기</div><div class="c">'+
     '<div class="row"><button class="sm gh" data-a="csv">기록 복사</button>'+
     '<button class="sm gh" data-a="backup">백업 저장</button>'+
@@ -1731,6 +1783,7 @@ document.addEventListener("click",function(e){
   else if(a==="delMemo") A.delMemo(b.getAttribute("data-id"));
   else if(a==="memoImp") A.memoImp(b.getAttribute("data-v"));
   else if(a==="hideTrack") A.hideTrack(b.getAttribute("data-k"));
+  else if(a==="unhideTrack") A.unhideTrack(b.getAttribute("data-k"));
   else if(a==="timeEdit") A.timeEdit(b.getAttribute("data-k"));
   else if(a==="timeZero") A.timeZero(b.getAttribute("data-k"));
   else if(a==="tag") A.tag(b.getAttribute("data-t"));
