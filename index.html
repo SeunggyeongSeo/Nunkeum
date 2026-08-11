@@ -208,7 +208,7 @@ function freshDay(prev){
            running:null, stopAt:0, landing:"", tag:null, minMode:false, did:"", good:"" };
 }
 var S = { day:freshDay(null), tracks:[], carry:"", hist:{}, tasks:[], events:[], memos:[], theme:null, core:null, fs:null };
-var wkOff = 0, csvText = null, selDate = null, editCore = false, mOff = 0, answer = null, showRv = false, showSync = false, showShare = false, sessEd = null;
+var wkOff = 0, csvText = null, selDate = null, editCore = false, mOff = 0, answer = null, showRv = false, showSync = false, showShare = false, sessEd = null, itemEd = null, showSess = false;
 var taskView = "bucket", evImp = false, memoImp = false;
 var tab = "today", PRICOL = {1:"--red",2:"--amber",3:"--steel"};
 
@@ -237,6 +237,7 @@ function load(){
   if(S.day && S.day.sessions) S.day.sessions.forEach(function(s,i){
     if(!s.id) s.id = "s"+(s.at||"")+"-"+(s.k||"")+"-"+i+"-"+Math.random().toString(36).slice(2,6);
   });
+  mergeDupTracks();
   S.events = S.events.filter(function(e){ return e.date >= today(); });
   if(!S.theme){
     S.theme = (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
@@ -415,6 +416,7 @@ function adopt(m){
   if(m.core&&m.core.length) S.core=m.core;
   S.updatedAt=m.updatedAt||S.updatedAt;
   if(m.theme && m.theme!==S.theme){ S.theme=m.theme; document.documentElement.setAttribute("data-t",S.theme); }
+  mergeDupTracks();
   saveLocalOnly();
 }
 
@@ -503,6 +505,47 @@ function syncConnect(){          /* 설정 저장 직후: 첫 연결은 데이�
 }
 
 function allTracks(){ return S.core.concat(S.tracks); }
+/* 같은 제목으로 만든 항목 합치기 — 시간은 전부 더해서 보존하고, 항목만 하나로 줄인다.
+   두 눈금(thesis/exam)은 건드리지 않는다. */
+function mergeDupTracks(){
+  var byName={}, remap={}, keep=[], changed=false;
+  (S.tracks||[]).forEach(function(t){
+    var n=(t.name||"").trim();
+    if(!n){ keep.push(t); return; }
+    var first=byName[n];
+    if(!first){ byName[n]=t; keep.push(t); return; }
+    remap[t.k]=first.k;               /* 나중 것 → 처음 것으로 */
+    if(!t.hidden) first.hidden=false; /* 하나라도 쓰고 있었으면 보이게 */
+    changed=true;
+  });
+  if(!changed) return false;
+  S.tracks=keep;
+  var move=function(l){ if(!l) return;
+    Object.keys(remap).forEach(function(from){
+      if(l[from]==null) return;
+      var to=remap[from];
+      l[to]=(l[to]||0)+(+l[from]||0);
+      delete l[from];
+    });
+  };
+  move(S.day&&S.day.logged);
+  (S.day&&S.day.sessions||[]).forEach(function(s){ if(remap[s.k]) s.k=remap[s.k]; });
+  if(S.day&&S.day.running&&remap[S.day.running.k]) S.day.running.k=remap[S.day.running.k];
+  Object.keys(S.hist||{}).forEach(function(ds){ move(S.hist[ds]&&S.hist[ds].l); });
+  return true;
+}
+/* 한 항목의 오늘 총 시간을 직접 맞추기 — 앉은 기록도 합이 맞게 따라 조정된다 */
+function setItemTotal(k, target){
+  target=Math.max(0, Math.round(+target||0));
+  if(target===0) delete S.day.logged[k]; else S.day.logged[k]=target;
+  var ss=(S.day.sessions||[]).filter(function(s){ return s.k===k; });
+  if(!ss.length) return;                       /* ± 로만 쌓인 항목은 총합만 맞추면 끝 */
+  var sum=ss.reduce(function(a,s){ return a+s.mins; },0), diff=target-sum;
+  if(diff>0){ ss[ss.length-1].mins+=diff; return; }
+  var need=-diff;
+  for(var i=ss.length-1;i>=0&&need>0;i--){ var cut=Math.min(ss[i].mins,need); ss[i].mins-=cut; need-=cut; }
+  S.day.sessions=S.day.sessions.filter(function(s){ return s.k!==k || s.mins>0; });
+}
 function weekOf(t){ return t.goal * t.days; }
 function nameOf(t){ return t.name || "이름 없는 것"; }
 function trackOf(k){ var a=allTracks(); for(var i=0;i<a.length;i++) if(a[i].k===k) return a[i];
@@ -863,7 +906,23 @@ var A = {
     if(m>=1 && !confirm(dur(m)+" 재고 있었어. 안 남기고 지울까?")) return;
     S.day.running=null; S.day.stopAt=Date.now(); commit();
   },
-  sessEdit: function(id){ sessEd = (sessEd===id ? null : id); commit(); },
+  sessDetail: function(){ showSess=!showSess; sessEd=null; commit(); },
+  itemEdit: function(k){ itemEd = (itemEd===k ? null : k); sessEd=null; commit(); },
+  itemCancel: function(){ itemEd=null; commit(); },
+  itemSave: function(){
+    var k=itemEd; if(!k){ commit(); return; }
+    var el=document.getElementById("ieM");
+    setItemTotal(k, el?el.value:S.day.logged[k]);
+    itemEd=null; commit();
+  },
+  itemZero: function(k){
+    var t=trackOf(k);
+    if(!confirm(esc(nameOf(t))+"의 오늘 기록을 다 지울까? 지난 날들은 그대로 남아.")) return;
+    setItemTotal(k, 0);
+    S.day.sessions=(S.day.sessions||[]).filter(function(s){ return s.k!==k; });
+    itemEd=null; commit();
+  },
+  sessEdit: function(id){ sessEd = (sessEd===id ? null : id); itemEd=null; commit(); },
   sessCancel: function(){ sessEd=null; commit(); },
   sessDel: function(id){
     var s=sessOf(id); if(!s) return;
@@ -887,6 +946,10 @@ var A = {
   minMode: function(){ S.day.minMode=!S.day.minMode; commit(); },
   addTrack: function(){
     var el=document.getElementById("nt"), n=el.value.trim(); if(!n) return;
+    var core=S.core.filter(function(t){ return (t.name||"").trim()===n; })[0];
+    if(core){ alert("\u201c"+n+"\u201d\uc740 \uc774\ubbf8 \uc624\ub298\uc758 \ub450 \uac00\uc9c0 \uc911 \ud558\ub098\uc57c. \uc704\uc5d0\uc11c \uc7ac\uc8fc\uba74 \ub3fc."); el.value=""; return; }
+    var same=S.tracks.filter(function(t){ return (t.name||"").trim()===n; })[0];
+    if(same){ same.hidden=false; el.value=""; alert("\u201c"+n+"\u201d\uc740 \uc774\ubbf8 \uc788\uc5b4\uc11c \uadf8\uac83\uc5d0 \ud569\uc0b0\ud560\uac8c."); commit(); return; }
     var live=S.tracks.filter(function(t){return !t.hidden;}).length;
     S.tracks.push({ k:"u"+Date.now(), name:n, v:SUB[live%SUB.length] }); commit();
   },
@@ -1115,30 +1178,59 @@ function render(){
 
   /* 앉은 기록 */
   if(d.sessions.length){
-    h.push('<div class="c"><div class="h"><s></s><b>오늘 앉은 기록</b></div>'+
-      '<div class="hint" style="font-size:calc(var(--u)*0.7813);margin-bottom:9px">잘못 눌렀거나 시간이 안 맞으면 고치거나 지워도 돼. 고치면 오늘 시간과 돌아보기에 바로 반영돼.</div>');
+    /* 항목별로 묶어서 짧게 — 줄줄이 늘어나지 않게. 자세한 줄은 접어둔다 */
+    var grp=[], gi={};
     d.sessions.forEach(function(s){
-      var t=trackOf(s.k);
-      if(sessEd===s.id){
+      if(gi[s.k]==null){ gi[s.k]=grp.length; grp.push({k:s.k, mins:0, n:0}); }
+      var g=grp[gi[s.k]]; g.mins+=s.mins; g.n++;
+    });
+    grp.forEach(function(g){ if(S.day.logged[g.k]!=null) g.mins=Math.round(S.day.logged[g.k]); });
+    grp.sort(function(a,b){ return b.mins-a.mins; });
+    h.push('<div class="c"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:11px">'+
+      '<div class="h" style="margin:0"><s></s><b>오늘 앉은 기록</b></div>'+
+      '<button class="sm gh" data-a="sessDetail">'+(showSess?"접기":"자세히")+'</button></div>');
+    grp.forEach(function(g){
+      var t=trackOf(g.k), c=CV(t.v);
+      if(itemEd===g.k){
         h.push('<div class="c" style="margin:6px 0">'+
-          '<div class="fld"><span>항목</span><select class="g" id="seK">'+
-          allTracks().map(function(x){ return '<option value="'+esc(x.k)+'"'+(x.k===s.k?" selected":"")+'>'+esc(nameOf(x))+'</option>'; }).join('')+
-          '</select></div>'+
-          '<div class="fld"><span>시작</span><input class="g" type="time" id="seA" value="'+esc(s.at)+'"></div>'+
-          '<div class="fld"><span>시간(분)</span><input class="g" type="number" id="seM" min="0" max="900" step="5" value="'+s.mins+'"></div>'+
-          '<div class="row" style="margin-top:10px"><button class="sm k" data-a="sessSave">저장</button>'+
-          '<button class="sm gh" data-a="sessCancel">취소</button>'+
-          '<button class="sm gh" data-a="sessDel" data-id="'+s.id+'" style="margin-left:auto;color:var(--red)">지우기</button></div>'+
-          '<div class="hint" style="margin-top:9px;font-size:calc(var(--u)*0.7813)">0분으로 저장하면 이 줄은 지워져.</div>'+
-          '</div>');
+          '<div class="fld"><span style="color:'+c+';font-weight:600">'+esc(nameOf(t))+'</span>'+
+          '<input class="g" type="number" id="ieM" min="0" max="900" step="5" value="'+g.mins+'"></div>'+
+          '<div class="row" style="margin-top:10px"><button class="sm k" data-a="itemSave">저장</button>'+
+          '<button class="sm gh" data-a="itemCancel">취소</button>'+
+          '<button class="sm gh" data-a="itemZero" data-k="'+g.k+'" style="margin-left:auto;color:var(--red)">오늘 것 지우기</button></div>'+
+          '<div class="hint" style="margin-top:9px;font-size:calc(var(--u)*0.7813)">분 단위로 적어줘. 총 시간을 바꾸면 아래 앉은 줄도 맞춰서 따라가.</div></div>');
         return;
       }
-      h.push('<div class="it" style="padding:7px 0"><span class="tm n">'+s.at+'</span>'+
-        '<span class="t" style="color:'+CV(t.v)+';font-weight:600">'+esc(nameOf(t))+'</span>'+
-        '<span class="n" style="font-size:calc(var(--u)*0.8438);color:var(--mu)">'+dur(s.mins)+'</span>'+
-        '<button class="sm gh" data-a="sessEdit" data-id="'+s.id+'">고치기</button>'+
-        '<button class="x" data-a="sessDel" data-id="'+s.id+'">✕</button></div>');
+      h.push('<div class="it" style="padding:8px 0">'+
+        '<span style="width:7px;height:7px;border-radius:7px;background:'+c+';flex:none"></span>'+
+        '<span class="t" style="color:'+c+';font-weight:600">'+esc(nameOf(t))+'</span>'+
+        '<span class="n" style="font-size:calc(var(--u)*0.75);color:var(--mu)">'+g.n+'번</span>'+
+        '<span class="n" style="font-size:calc(var(--u)*0.8438);font-weight:600">'+dur(g.mins)+'</span>'+
+        '<button class="sm gh" data-a="itemEdit" data-k="'+g.k+'">고치기</button></div>');
     });
+    if(showSess){
+      h.push('<div class="hint" style="font-size:calc(var(--u)*0.7813);margin:12px 0 2px">앉은 줄 하나씩 — 시각이나 항목이 틀렸을 때만 쓰면 돼</div>');
+      d.sessions.forEach(function(s){
+        var t=trackOf(s.k);
+        if(sessEd===s.id){
+          h.push('<div class="c" style="margin:6px 0">'+
+            '<div class="fld"><span>항목</span><select class="g" id="seK">'+
+            allTracks().map(function(x){ return '<option value="'+esc(x.k)+'"'+(x.k===s.k?" selected":"")+'>'+esc(nameOf(x))+'</option>'; }).join('')+
+            '</select></div>'+
+            '<div class="fld"><span>시작</span><input class="g" type="time" id="seA" value="'+esc(s.at)+'"></div>'+
+            '<div class="fld"><span>시간(분)</span><input class="g" type="number" id="seM" min="0" max="900" step="5" value="'+s.mins+'"></div>'+
+            '<div class="row" style="margin-top:10px"><button class="sm k" data-a="sessSave">저장</button>'+
+            '<button class="sm gh" data-a="sessCancel">취소</button>'+
+            '<button class="sm gh" data-a="sessDel" data-id="'+s.id+'" style="margin-left:auto;color:var(--red)">지우기</button></div></div>');
+          return;
+        }
+        h.push('<div class="it" style="padding:6px 0"><span class="tm n">'+s.at+'</span>'+
+          '<span class="t" style="color:'+CV(t.v)+'">'+esc(nameOf(t))+'</span>'+
+          '<span class="n" style="font-size:calc(var(--u)*0.8125);color:var(--mu)">'+dur(s.mins)+'</span>'+
+          '<button class="sm gh" data-a="sessEdit" data-id="'+s.id+'">고치기</button>'+
+          '<button class="x" data-a="sessDel" data-id="'+s.id+'">✕</button></div>');
+      });
+    }
     h.push('</div>');
   }
 
@@ -1635,6 +1727,8 @@ document.addEventListener("click",function(e){
   else if(a==="memoImp") A.memoImp(b.getAttribute("data-v"));
   else if(a==="hideTrack") A.hideTrack(b.getAttribute("data-k"));
   else if(a==="sessEdit") A.sessEdit(b.getAttribute("data-id"));
+  else if(a==="itemEdit") A.itemEdit(b.getAttribute("data-k"));
+  else if(a==="itemZero") A.itemZero(b.getAttribute("data-k"));
   else if(a==="sessDel") A.sessDel(b.getAttribute("data-id"));
   else if(a==="tag") A.tag(b.getAttribute("data-t"));
   else if(a==="pick") A.pick(b.getAttribute("data-ds"));
